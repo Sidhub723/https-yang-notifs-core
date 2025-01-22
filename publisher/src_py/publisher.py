@@ -7,6 +7,8 @@ import socket
 import os
 import requests
 import datetime
+import json
+import dicttoxml
 
 def fetch_data():
     
@@ -49,14 +51,17 @@ def main():
                 prog="publisher.py",
                 description="Sets up a HTTPS publisher, in accordance with RFC____",
                 epilog="---Fill in here---")
+        parser.add_argument("ip",type=str,help="IP Address to send YANG notification. Can be IPV4 or IPV6. IPv4 addresses follow dotted decimal format, as implemented in inet_pton(). IPv6 addresses also follow inet_pton() implementation standards. See RFC 2373 for further details on the representation of Ipv6 addresses")
         parser.add_argument("-t",type=float,help="Time interval between requests (in seconds)")
         parser.add_argument("-r",type=int,help="Sends notifications randomly, with the time interval being a random number between (0,argument)")
-        parser.add_argument("ip",type=str,help="IP Address to send YANG notification. Can be IPV4 or IPV6. IPv4 addresses follow dotted decimal format, as implemented in inet_pton(). IPv6 addresses also follow inet_pton() implementation standards. See RFC 2373 for further details on the representation of Ipv6 addresses")
+        parser.add_argument("-p",type=int,help="Port number to send YANG notification.")
         parser.parse_args()
         args = parser.parse_args()
-        #print(args.ip)
+        # print(args.ip)
+
         time_interval = args.t if args.t else 2
         
+        print(args.ip)
         if( not valid_ipv4_ipv6(args.ip)):
             print("Invalid IP Address")
             raise KeyboardInterrupt
@@ -65,29 +70,37 @@ def main():
         #response = os.system(f"ping -c 5 {args.ip}")
         #print(response)
         
-        capabilities_url = f"https://{args.ip}/capabilities"
-
-        capabilities_response = requests.get(capabilities_url)
+        if(args.p):
+            capabilities_url = f"https://{args.ip}:{args.p}/capabilities"
+            url = f"https://{args.ip}:{args.p}/relay-notification"
+        else:
+            capabilities_url = f"https://{args.ip}/capabilities"
+            url = f"https://{args.ip}/relay-notification"
+        
+        capabilities_response = requests.get(capabilities_url,verify=False)
         capabilities_response.raise_for_status()
-        capabilities = capabilities_response.json()
-        print(f"Capabilities discovered: {capabilities}")
-        
-        if 'json' in capabilities.get('supported_encodings', []):
-            print("Receiver supports JSON encoding.")
-        else:
-            print("Receiver does not support JSON encoding.")
-        
-        if 'xml' in capabilities.get('supported_encodings', []):
-            print("Receiver supports XML encoding.")
-        else:
-            print("Receiver does not support XML encoding.")
+        capabilities = capabilities_response
+        # capabilities = json.loads(capabilities_response.text)
+
+        content_type = capabilities_response.headers.get('Content-Type')
+        print(f"Capabilities discovered through content-type header: {capabilities}")
+        print("Body of capabilities response:")
+        print(capabilities.text)
+
+        if 'json' in capabilities.text:
+            print("Receiver supports JSON encoding")
+        if 'xml' in capabilities.text:
+            print("Receiver supports XML encoding")
+        if 'json' not in capabilities.text and 'xml' not in capabilities.text:
+            print("Receiver does not support any valid encoding type!")
+            raise AssertionError("Receiver does not support any valid encoding type!")
             
 
         while(True):
             if(args.r):
                 time_interval = random.randint(0,args.r)
                 if(args.t):
-                    print("Error: argument -r cannot be accompanied by any other argument")
+                    print("Error: argument -r cannot be accompanied by any other argument like -t")
                     sys.exit(0)
             time.sleep(time_interval)
             (interface_data_rx,interface_data_tx) = fetch_data()
@@ -98,7 +111,6 @@ def main():
             print(datetime.datetime.now().isoformat() + 'Z')
             
 
-            url = f"https://{args.ip}/notifications"
             payload = {
             "notification": {
                 "eventTime": datetime.datetime.now().isoformat() + 'Z',
@@ -106,9 +118,16 @@ def main():
                 "interface_data_tx": interface_data_tx
                     }
                 }
-            headers = {'Content-Type': 'application/json'}  #! Content type should beb adjusted based on capabilities of reciever
+            headers = {'Content-Type': f'{content_type}'}  
+            
+            if 'json' in capabilities.text:
+                payload = json.dumps(payload)
+            elif 'xml' in capabilities.text:
+                payload = dicttoxml.dicttoxml(payload)
+
+
             try:
-                response = requests.post(url, json=payload, headers=headers)
+                response = requests.post(url, json=payload, headers=headers,verify=False)
                 response.raise_for_status()
                 print(f"Notification sent successfully: {response.status_code}")
             except requests.exceptions.RequestException as e:
@@ -118,7 +137,7 @@ def main():
     except requests.exceptions.RequestException as e:
         print(f"Failed to discover capabilities: {e}")
 
-    except KeyboardInterrupt:
+    except KeyboardInterrupt or AssertionError:
         print("\n\nTerminating Publisher\n")
 
 if __name__ == "__main__":
