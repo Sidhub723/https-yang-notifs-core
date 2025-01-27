@@ -12,6 +12,7 @@ import dicttoxml
 
 def fetch_data():
     
+    #!TODO - change this to the interface YANG model defined in RFC8343
     interface_info_rx = ["bytes","packets","errs","drop","fifo","frame","compressed","multicast"]
     interface_info_tx = ["bytes","packets","errs","drop","fifo","colls","carrier","compressed"]
     #print(interface_info_rx[0])
@@ -45,12 +46,31 @@ def valid_ipv4_ipv6(addr):
     
     return True
 
+def get_capabilities(url):
+    try:
+        response = requests.get(url, verify=False, headers={'Accept': 'application/json, application/xml'})
+        response.raise_for_status()
+        return response
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to discover capabilities: {e}")
+        raise KeyboardInterrupt
+
+def send_notification(url, payload, headers):
+    try:
+        response = requests.post(url, data=payload, headers=headers, verify=False)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to send notification: {e}")
+        raise KeyboardInterrupt
+
+
 def main():
     try:
         parser = argparse.ArgumentParser(
                 prog="publisher.py",
                 description="Sets up a HTTPS publisher, in accordance with RFC____",
-                epilog="---Fill in here---")
+                epilog="-------------------------------")                             ## To be done : Add appropriate epilog
         parser.add_argument("ip",type=str,help="IP Address to send YANG notification. Can be IPV4 or IPV6. IPv4 addresses follow dotted decimal format, as implemented in inet_pton(). IPv6 addresses also follow inet_pton() implementation standards. See RFC 2373 for further details on the representation of Ipv6 addresses")
         parser.add_argument("-t",type=float,help="Time interval between requests (in seconds)")
         parser.add_argument("-r",type=int,help="Sends notifications randomly, with the time interval being a random number between (0,argument)")
@@ -66,32 +86,31 @@ def main():
             print("Invalid IP Address")
             raise KeyboardInterrupt
         
-
-        #response = os.system(f"ping -c 5 {args.ip}")
-        #print(response)
         
         if(args.p):
             capabilities_url = f"https://{args.ip}:{args.p}/capabilities"
-            url = f"https://{args.ip}:{args.p}/relay-notification"
+            notification_url = f"https://{args.ip}:{args.p}/relay-notification"
         else:
             capabilities_url = f"https://{args.ip}/capabilities"
-            url = f"https://{args.ip}/relay-notification"
-        
-        capabilities_response = requests.get(capabilities_url,verify=False)
-        capabilities_response.raise_for_status()
+            notification_url = f"https://{args.ip}/relay-notification"
+
+        capabilities_response = get_capabilities(capabilities_url)
         capabilities = capabilities_response
+        
+        # capabilities_response = requests.get(capabilities_url,verify=False)
+        # capabilities_response.raise_for_status()
         # capabilities = json.loads(capabilities_response.text)
 
         content_type = capabilities_response.headers.get('Content-Type')
         print(f"Capabilities discovered through content-type header: {capabilities}")
         print("Body of capabilities response:")
-        print(capabilities.text)
+        print(capabilities_response.text)
 
-        if 'json' in capabilities.text:
+        if 'json' in capabilities_response.text:
             print("Receiver supports JSON encoding")
-        if 'xml' in capabilities.text:
+        if 'xml' in capabilities_response.text:
             print("Receiver supports XML encoding")
-        if 'json' not in capabilities.text and 'xml' not in capabilities.text:
+        if 'json' not in capabilities_response.text and 'xml' not in capabilities_response.text:
             print("Receiver does not support any valid encoding type!")
             raise AssertionError("Receiver does not support any valid encoding type!")
             
@@ -102,12 +121,13 @@ def main():
                 if(args.t):
                     print("Error: argument -r cannot be accompanied by any other argument like -t")
                     sys.exit(0)
+
             time.sleep(time_interval)
             (interface_data_rx,interface_data_tx) = fetch_data()
 
-            print(interface_data_rx)
-            print(interface_data_tx)
-
+            #DEBUG
+            # print(interface_data_rx)
+            # print(interface_data_tx)
             print(datetime.datetime.now().isoformat() + 'Z')
             
 
@@ -125,17 +145,11 @@ def main():
             elif 'xml' in capabilities.text:
                 payload = dicttoxml.dicttoxml(payload)
 
-
-            try:
-                response = requests.post(url, json=payload, headers=headers,verify=False)
-                response.raise_for_status()
-                print(f"Notification sent successfully: {response.status_code}")
-            except requests.exceptions.RequestException as e:
-                print(f"Failed to send notification: {e}")
+            response = send_notification(notification_url, payload, headers)
 
             
     except requests.exceptions.RequestException as e:
-        print(f"Failed to discover capabilities: {e}")
+        print(f"Failed to discover capabilities OR Send notification(s): {e}")
 
     except KeyboardInterrupt or AssertionError:
         print("\n\nTerminating Publisher\n")
