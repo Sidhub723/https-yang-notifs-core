@@ -10,9 +10,61 @@ import datetime
 import json
 import dicttoxml
 
-def fetch_data():
+def fetch_data_new():
+    interfaces = os.listdir("/sys/class/net/")
+    # looping through all interfaces does not work as some files are not readable (!TODO - investigate why)
+    return {"enx0c37962a29ea": get_interface_info("enx0c37962a29ea")}
+
+
+def read_file(path):
+    try:
+        with open(path, 'r') as f:
+            print(path)
+            # return f.read().strip()
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+def get_interface_info(iface):
+    iface_path = f"/sys/class/net/{iface}/"
+    stats_path = f"{iface_path}/statistics/"
     
-    #!TODO - change this to the interface YANG model defined in RFC8343
+    interface = {
+        "name": iface,
+        "description": "",              #not sure where to find this information
+        "type": read_file(iface_path + "type"),
+        "enabled": read_file(iface_path + "carrier") == "1",
+        "admin-status": "up" if "UP" in read_file(iface_path + "flags") else "down",
+        "oper-status": read_file(iface_path + "operstate"),
+        "last-change": "",              # not available directly
+        "if-index": read_file(iface_path + "ifindex"),
+        "phys-address": read_file(iface_path + "address"),
+        "higher-layer-if": [],              # ??? 
+        "lower-layer-if": [],               # ??? not available directly
+        "speed": read_file(iface_path + "speed"),
+        "statistics": {
+            "discontinuity-time":   "",             # not available directly
+            "in-octets": read_file(stats_path + "rx_bytes"),
+            "in-unicast-pkts": read_file(stats_path + "rx_packets"),
+            "in-broadcast-pkts": read_file(stats_path + "rx_broadcast"),
+            "in-multicast-pkts": read_file(stats_path + "rx_multicast"),
+            "in-discards": read_file(stats_path + "rx_dropped"),
+            "in-errors": read_file(stats_path + "rx_errors"),
+            "in-unknown-protos": None,              # not directly available
+            "out-octets": read_file(stats_path + "tx_bytes"),
+            "out-unicast-pkts": read_file(stats_path + "tx_packets"),
+            "out-broadcast-pkts": read_file(stats_path + "tx_broadcast"),
+            "out-multicast-pkts": read_file(stats_path + "tx_multicast"),
+            "out-discards": read_file(stats_path + "tx_dropped"),
+            "out-errors": read_file(stats_path + "tx_errors"),
+        }
+    }
+    return interface
+    
+
+
+def fetch_data():
+    #!TODO - IN-PROGRESS- change this to the interface YANG model defined in RFC8343
     interface_info_rx = ["bytes","packets","errs","drop","fifo","frame","compressed","multicast"]
     interface_info_tx = ["bytes","packets","errs","drop","fifo","colls","carrier","compressed"]
     #print(interface_info_rx[0])
@@ -124,6 +176,10 @@ def main():
 
             time.sleep(time_interval)
             (interface_data_rx,interface_data_tx) = fetch_data()
+            # interface_data_yang8343 = fetch_data_new()
+            interface_data_yang8343 = {
+                    "interfaces": fetch_data_new()
+                }
 
             #DEBUG
             # print(interface_data_rx)
