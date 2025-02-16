@@ -9,56 +9,74 @@ import requests
 import datetime
 import json
 import dicttoxml
+from pyroute2 import IPRoute
 
 def fetch_data_new():
     interfaces = os.listdir("/sys/class/net/")
-    # looping through all interfaces does not work as some files are not readable (!TODO - investigate why)
-    return {"enx0c37962a29ea": get_interface_info("enx0c37962a29ea")}
-
+    interfaces_info = {}
+    
+    for iface in interfaces:
+        try:
+            interfaces_info[iface] = get_interface_info(iface)
+        except:
+            raise AssertionError(f"Error while reading interface information for interface : {iface}")
+    return interfaces_info
 
 def read_file(path):
-    try:
+    try :
         with open(path, 'r') as f:
-            print(path)
-            # return f.read().strip()
             return f.read()
-    except FileNotFoundError:
-        return None
+    except:
+        return ""               #Exceptions raised due to files being in an unreadable state is because the interface itself is
+                                #not up or not configured. Hence an empty string is returned. This is not an error condition. 
 
 def get_interface_info(iface):
     iface_path = f"/sys/class/net/{iface}/"
-    stats_path = f"{iface_path}/statistics/"
-    
-    interface = {
-        "name": iface,
-        "description": "",              #not sure where to find this information
-        "type": read_file(iface_path + "type"),
-        "enabled": read_file(iface_path + "carrier") == "1",
-        "admin-status": "up" if "UP" in read_file(iface_path + "flags") else "down",
-        "oper-status": read_file(iface_path + "operstate"),
-        "last-change": "",              # not available directly
-        "if-index": read_file(iface_path + "ifindex"),
-        "phys-address": read_file(iface_path + "address"),
-        "higher-layer-if": [],              # ??? 
-        "lower-layer-if": [],               # ??? not available directly
-        "speed": read_file(iface_path + "speed"),
-        "statistics": {
-            "discontinuity-time":   "",             # not available directly
-            "in-octets": read_file(stats_path + "rx_bytes"),
-            "in-unicast-pkts": read_file(stats_path + "rx_packets"),
-            "in-broadcast-pkts": read_file(stats_path + "rx_broadcast"),
-            "in-multicast-pkts": read_file(stats_path + "rx_multicast"),
-            "in-discards": read_file(stats_path + "rx_dropped"),
-            "in-errors": read_file(stats_path + "rx_errors"),
-            "in-unknown-protos": None,              # not directly available
-            "out-octets": read_file(stats_path + "tx_bytes"),
-            "out-unicast-pkts": read_file(stats_path + "tx_packets"),
-            "out-broadcast-pkts": read_file(stats_path + "tx_broadcast"),
-            "out-multicast-pkts": read_file(stats_path + "tx_multicast"),
-            "out-discards": read_file(stats_path + "tx_dropped"),
-            "out-errors": read_file(stats_path + "tx_errors"),
+    stats_path = f"{iface_path}statistics/"
+
+    ipr = IPRoute()
+    links = ipr.link("dump")
+    if_data_name = links[0].get_attr("IFLA_IFNAME")
+    if_data_operstate = None
+    for link in links:
+        if link.get_attr("IFLA_IFNAME") == iface:
+            if_data_operstate = link.get_attr("IFLA_OPERSTATE")
+            break
+
+    try :
+        interface = {
+            "name": iface,
+            "description": "",                                                      #? Unsure where to find this information
+            "type": read_file(iface_path + "type"),
+            "enabled": read_file(iface_path + "carrier") == "1",                    # Indicates the current physical link state of the interface
+            "admin-status" : read_file(iface_path + "operstate"),                   #! operstate is infact admin-status
+            "oper-status": if_data_operstate,                                  
+            "last-change": "",                                                      #Not directly available on *nix systems. This leaf is optional
+            "if-index": read_file(iface_path + "ifindex"),
+            "phys-address": read_file(iface_path + "address"),
+            "higher-layer-if": [],                                                  # check ifStackTable, not directly available. This leaf is optional
+            "lower-layer-if": [],                                                   # check ifStackTable, not directly available. This leaf is optional
+            "speed": read_file(iface_path + "speed"),                               #value in Mbits/sec
+            "statistics": {
+                "discontinuity-time":   "",                                         # TODO
+                "in-octets": read_file(stats_path + "rx_bytes"),                    #Indicates the number of bytes received by this network device
+                "in-unicast-pkts": read_file(stats_path + "rx_packets"),            #Indicates the total number of good packets received
+                # "in-broadcast-pkts": None,                                        #Not directly available on *nix systems. This leaf is optional
+                "in-multicast-pkts": read_file(stats_path + "multicast"),           
+                "in-discards": read_file(stats_path + "rx_dropped"),
+                "in-errors": read_file(stats_path + "rx_errors"),
+                # "in-unknown-protos": None,                                        #not directly available, what is this??
+                "out-octets": read_file(stats_path + "tx_bytes"),
+                "out-unicast-pkts": read_file(stats_path + "tx_packets"),
+                # "out-broadcast-pkts": read_file(stats_path + "tx_broadcast"),     #Not directly available on *nix systems. This leaf is optional
+                # "out-multicast-pkts": read_file(stats_path + "tx_multicast"),     #Not directly available on *nix systems. This leaf is optional
+                "out-discards": read_file(stats_path + "tx_dropped"),
+                "out-errors": read_file(stats_path + "tx_errors"),
+            }
         }
-    }
+    except:
+        raise AssertionError(f"Error while reading interface information for interface : {iface}")
+    
     return interface
     
 
@@ -148,6 +166,7 @@ def main():
 
         capabilities_response = get_capabilities(capabilities_url)
         capabilities = capabilities_response
+        print(capabilities_response.status_code)
         
         # capabilities_response = requests.get(capabilities_url,verify=False)
         # capabilities_response.raise_for_status()
@@ -157,11 +176,12 @@ def main():
         print(f"Capabilities discovered through content-type header: {capabilities}")
         print("Body of capabilities response:")
         print(capabilities_response.text)
+        print("_____________________________________________________________________")
 
         if 'json' in capabilities_response.text:
-            print("Receiver supports JSON encoding")
+            print("Receiver supports JSON encoding!")
         if 'xml' in capabilities_response.text:
-            print("Receiver supports XML encoding")
+            print("Receiver supports XML encoding!")
         if 'json' not in capabilities_response.text and 'xml' not in capabilities_response.text:
             print("Receiver does not support any valid encoding type!")
             raise AssertionError("Receiver does not support any valid encoding type!")
@@ -181,19 +201,13 @@ def main():
                     "interfaces": fetch_data_new()
                 }
 
-            #DEBUG
-            # print(interface_data_rx)
-            # print(interface_data_tx)
-            print(datetime.datetime.now().isoformat() + 'Z')
-            
-
             payload = {
-            "notification": {
-                "eventTime": datetime.datetime.now().isoformat() + 'Z',
-                "interface_data_rx": interface_data_rx,
-                "interface_data_tx": interface_data_tx
-                    }
+                "notification": {
+                    "eventTime": datetime.datetime.now().isoformat() + 'Z',
+                    "interface_data": interface_data_yang8343
                 }
+            }
+
             headers = {'Content-Type': f'{content_type}'}  
             
             if 'json' in capabilities.text:
@@ -202,6 +216,10 @@ def main():
                 payload = dicttoxml.dicttoxml(payload)
 
             response = send_notification(notification_url, payload, headers)
+            print("____________________________________________________")
+            print(response.status_code)
+
+            #handle error codes in response. If error code is 4xx or 5xx, raise an exception. read the rfc and do this
 
             
     except requests.exceptions.RequestException as e:
