@@ -82,10 +82,6 @@ def get_interface_info(iface):
 
 
 def fetch_data():
-    #!TODO - IN-PROGRESS- change this to the interface YANG model defined in RFC8343
-    interface_info_rx = ["bytes","packets","errs","drop","fifo","frame","compressed","multicast"]
-    interface_info_tx = ["bytes","packets","errs","drop","fifo","colls","carrier","compressed"]
-    #print(interface_info_rx[0])
     interface_data_rx = {}
     interface_data_tx = {}
     with open("/proc/net/dev",'r',encoding="utf-8") as f:
@@ -122,17 +118,20 @@ def get_capabilities(url):
         response.raise_for_status()
         return response
     except requests.exceptions.RequestException as e:
-        print(f"Failed to discover capabilities: {e}")
-        raise KeyboardInterrupt
+        raise AssertionError(f"Failed to discover capabilities: {e}")
 
 def send_notification(url, payload, headers):
     try:
         response = requests.post(url, data=payload, headers=headers, verify=False)
-        response.raise_for_status()
+        # response.raise_for_status()
         return response
     except requests.exceptions.RequestException as e:
-        print(f"Failed to send notification: {e}")
-        raise KeyboardInterrupt
+        raise AssertionError(f"Failed to send notification: {e}")
+    
+def publisher_print(message, verbose=False):
+    if verbose:
+        print(message)
+
 
 
 def main():
@@ -142,24 +141,29 @@ def main():
                 description="Sets up a HTTPS publisher, in accordance with RFC____",
                 epilog="-------------------------------")                             ## To be done : Add appropriate epilog
         parser.add_argument("ip",type=str,help="IP Address to send YANG notification. Can be IPV4 or IPV6. IPv4 addresses follow dotted decimal format, as implemented in inet_pton(). IPv6 addresses also follow inet_pton() implementation standards. See RFC 2373 for further details on the representation of Ipv6 addresses")
-        parser.add_argument("-t",type=float,help="Time interval between requests (in seconds)")
-        parser.add_argument("-r",type=int,help="Sends notifications randomly, with the time interval being a random number between (0,argument)")
-        parser.add_argument("-p",type=int,help="Port number to send YANG notification.")
-        parser.parse_args()
+        mutually_exlusive_group = parser.add_mutually_exclusive_group()
+        mutually_exlusive_group.add_argument("-t","--time",type=float,help="Time interval between requests (in seconds)")
+        mutually_exlusive_group.add_argument("-r","--random",type=int,help="Sends notifications randomly, with the time interval being a random number between (0,argument)")
+        parser.add_argument("-p","--port",type=int,help="Port number to send YANG notification.")
+        parser.add_argument("-v","--verbose",action="store_true",help="Verbose mode for extra information.")
+        parser.add_argument("--num-retries", type=int, help="Number of retries in case of failure while sending a notification. The publisher will retry to obtain capabilities and continue sending notifications")
+        # parser.parse_args()
         args = parser.parse_args()
         # print(args.ip)
 
-        time_interval = args.t if args.t else 2
+        time_interval = args.time if args.time else 2
         
-        print(args.ip)
+        print(args.verbose)
+
+        publisher_print(args.ip, args.verbose)
         if( not valid_ipv4_ipv6(args.ip)):
             print("Invalid IP Address")
             raise KeyboardInterrupt
         
         
-        if(args.p):
-            capabilities_url = f"https://{args.ip}:{args.p}/capabilities"
-            notification_url = f"https://{args.ip}:{args.p}/relay-notification"
+        if(args.port):
+            capabilities_url = f"https://{args.ip}:{args.port}/capabilities"
+            notification_url = f"https://{args.ip}:{args.port}/relay-notification"
         else:
             capabilities_url = f"https://{args.ip}/capabilities"
             notification_url = f"https://{args.ip}/relay-notification"
@@ -167,39 +171,31 @@ def main():
         capabilities_response = get_capabilities(capabilities_url)
         capabilities = capabilities_response
         print(capabilities_response.status_code)
-        
-        # capabilities_response = requests.get(capabilities_url,verify=False)
-        # capabilities_response.raise_for_status()
-        # capabilities = json.loads(capabilities_response.text)
 
         content_type = capabilities_response.headers.get('Content-Type')
-        print(f"Capabilities discovered through content-type header: {capabilities}")
-        print("Body of capabilities response:")
-        print(capabilities_response.text)
+        print(f"Capabilities discovered through content-type header: {content_type}")
+        publisher_print("Body of capabilities response:")
+        publisher_print(capabilities_response.text)
         print("_____________________________________________________________________")
 
         if 'json' in capabilities_response.text:
-            print("Receiver supports JSON encoding!")
+            publisher_print("Receiver supports JSON encoding!")
         if 'xml' in capabilities_response.text:
-            print("Receiver supports XML encoding!")
+            publisher_print("Receiver supports XML encoding!")
         if 'json' not in capabilities_response.text and 'xml' not in capabilities_response.text:
-            print("Receiver does not support any valid encoding type!")
+            publisher_print("Receiver does not support any valid encoding type!")
             raise AssertionError("Receiver does not support any valid encoding type!")
             
 
-        while(True):
-            if(args.r):
-                time_interval = random.randint(0,args.r)
-                if(args.t):
-                    print("Error: argument -r cannot be accompanied by any other argument like -t")
-                    sys.exit(0)
+        retries = args.num_retries if args.num_retries else 3
+        while(True and retries >= 0):
+            #Removed checks for -r and -t as they are now handled by argparse.ArgumentParser.handle_mutually_exclusive_group()
 
             time.sleep(time_interval)
-            (interface_data_rx,interface_data_tx) = fetch_data()
-            # interface_data_yang8343 = fetch_data_new()
+
             interface_data_yang8343 = {
                     "interfaces": fetch_data_new()
-                }
+                }   
 
             payload = {
                 "notification": {
@@ -207,7 +203,6 @@ def main():
                     "interface_data": interface_data_yang8343
                 }
             }
-
             headers = {'Content-Type': f'{content_type}'}  
             
             if 'json' in capabilities.text:
@@ -215,12 +210,20 @@ def main():
             elif 'xml' in capabilities.text:
                 payload = dicttoxml.dicttoxml(payload)
 
-            response = send_notification(notification_url, payload, headers)
+            notification_response = send_notification(notification_url, payload, headers)
             print("____________________________________________________")
-            print(response.status_code)
+            print("Notification sent, its status code is")
+            print(notification_response.status_code)
 
-            #handle error codes in response. If error code is 4xx or 5xx, raise an exception. read the rfc and do this
+            #if the response is 204 no content, then print a message saying notification was sent successfully
+            if notification_response.status_code == 204:
+                print("Notification sent successfully!")
+            else:
+                print("Notification failed to send. Retrying...")
+                retries -= 1
 
+            #test scenario - where notifications are being sent, and suddenly kill the collector, the behaviour should be that it should continue to 
+            # try to send notifications? HTTPS is a stateless protocol right? So should it continue to send notifications upto the retry limit? 
             
     except requests.exceptions.RequestException as e:
         print(f"Failed to discover capabilities OR Send notification(s): {e}")
